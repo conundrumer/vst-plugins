@@ -15,6 +15,7 @@ mod osc;
 mod midi;
 mod vst;
 mod sender;
+mod midi_pitch;
 
 plugin_main!(vst::OscifyPlugin);
 
@@ -32,7 +33,7 @@ pub fn test_config() {
         note_on: true,
         channel: 3,
         key: 36,
-        velocity: 42
+        velocity: 0.75
     };
 
     let channel_message = sender::ChannelMessage {

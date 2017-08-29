@@ -11,7 +11,7 @@ pub struct NoteMessage {
     pub note_on: bool,
     pub channel: u8,
     pub key: u8,
-    pub velocity: u8
+    pub velocity: f32
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -137,7 +137,7 @@ impl OscifyPlugin {
         let msg = vec![
             OscType::Bool(note_on),
             OscType::Int(key.into()),
-            OscType::Int(velocity.into()),
+            OscType::Float(velocity.into()),
             OscType::Float(self.phase)
         ];
 
