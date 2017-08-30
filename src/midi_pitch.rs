@@ -14,11 +14,18 @@ fn to_u14((msb, lsb): (u8, u8)) -> u16 {
     ((msb as u16) << 7) | (lsb as u16)
 }
 
+#[derive(Debug, Copy, Clone)]
+enum NoteStatus {
+    Off,
+    On(u8),
+    PendingBend(f32)
+}
+
 #[derive(Debug)]
 pub struct MidiPitch {
     selected_param: (u8, u8),
     pitch_bend: (u8, u8),
-    keys: [Option<u8>; 16] // index is channel
+    keys: [NoteStatus; 16] // index is channel
 }
 
 impl MidiPitch {
@@ -26,27 +33,45 @@ impl MidiPitch {
         MidiPitch {
             selected_param: (0x7F, 0x7F),
             pitch_bend: (2, 0), // 2 semitones
-            keys: [None; 16]
+            keys: [NoteStatus::Off; 16]
         }
     }
 
     pub fn get_key(&self, channel: u8) -> u8 {
-        self.keys[channel as usize].unwrap_or(0)
+        match self.keys[channel as usize] {
+            NoteStatus::On(key) => key,
+            _ => 0
+        }
     }
 
-    pub fn get_pitch(&self, channel: u8, pitch_bend_amount: u16) -> f32 {
-        let key = self.get_key(channel) as f32;
+    pub fn get_pitch(&mut self, channel: u8, pitch_bend_amount: u16) -> Option<f32> {
+        let channel = channel as usize;
         let pitch_bend = (to_u14(self.pitch_bend) as f32) / ((1 << 7) as f32);
         let pitch_bend_amount = (pitch_bend_amount as f32) / ((1 << 14) as f32);
-        key + (pitch_bend_amount * 2. - 1.) * pitch_bend
+        let bend = (pitch_bend_amount * 2. - 1.) * pitch_bend;
+
+        match self.keys[channel] {
+            NoteStatus::On(key) => Some((key as f32) + bend),
+            _ => {
+                self.keys[channel] = NoteStatus::PendingBend(bend);
+                None
+            }
+        }
+    }
+
+    pub fn get_pending_pitch(&self, channel: u8, key: u8) -> Option<f32> {
+        match self.keys[channel as usize] {
+            NoteStatus::PendingBend(bend) => Some((key as f32) + bend),
+            _ => None
+        }
     }
 
     pub fn process_midi_event(&mut self, msg: &Message) {
         match msg {
             &Message::NoteOff { channel, .. } =>
-                self.keys[channel as usize] = None,
+                self.keys[channel as usize] = NoteStatus::Off,
             &Message::NoteOn { channel, key, .. } =>
-                self.keys[channel as usize] = Some(key),
+                self.keys[channel as usize] = NoteStatus::On(key),
             &Message::ControlChange { controller, value, .. } =>
                 match controller {
                     RPN_MSB =>

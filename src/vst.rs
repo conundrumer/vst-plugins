@@ -1,5 +1,3 @@
-// use vst2::plugin::{Category, Plugin, Info, CanDo};
-// use vst2::api::{Supported};
 use vst2::event::{Event};
 use vst2::{plugin, api};
 
@@ -27,7 +25,7 @@ fn u7_into_f32(x: u8) -> f32 {
 const CC_TIMBRE: u8 = 74;
 const CC_PAN: u8 = 10;
 impl OscifyPlugin {
-    fn process_midi_event(&self, msg: &Message) {
+    fn process_midi_event(&mut self, msg: &Message) {
         match msg {
             &Message::NoteOff { channel, key, velocity } =>
                 self.send_note(sender::NoteMessage {
@@ -36,20 +34,32 @@ impl OscifyPlugin {
                     key,
                     velocity: u7_into_f32(velocity)
                 }),
-            &Message::NoteOn { channel, key, velocity } =>
+            &Message::NoteOn { channel, key, velocity } => {
+                if let Some(pitch) = self.midi_pitch.get_pending_pitch(channel, key) {
+                    self.send_channel(sender::ChannelMessage {
+                        channel_type: sender::ChannelType::Pitch,
+                        channel,
+                        key,
+                        value: pitch
+                    })
+                }
                 self.send_note(sender::NoteMessage {
                     note_on: true,
                     channel,
                     key,
                     velocity: u7_into_f32(velocity)
-                }),
-            &Message::PitchBend { channel, value } =>
-                self.send_channel(sender::ChannelMessage {
-                    channel_type: sender::ChannelType::Pitch,
-                    channel,
-                    key: self.midi_pitch.get_key(channel),
-                    value: self.midi_pitch.get_pitch(channel, value)
-                }),
+                })
+            },
+            &Message::PitchBend { channel, value } => {
+                if let Some(pitch) = self.midi_pitch.get_pitch(channel, value) {
+                    self.send_channel(sender::ChannelMessage {
+                        channel_type: sender::ChannelType::Pitch,
+                        channel,
+                        key: self.midi_pitch.get_key(channel),
+                        value: pitch
+                    })
+                }
+            },
             &Message::ChannelPressure { channel, pressure } =>
                 self.send_channel(sender::ChannelMessage {
                     channel_type: sender::ChannelType::Pressure,
@@ -77,6 +87,7 @@ impl OscifyPlugin {
                 },
             _ => ()
         }
+        self.midi_pitch.process_midi_event(&msg);
     }
     fn process_param_event(&self, index: usize, value: f32) {
         self.send_param(sender::ParamMessage { param_index: index, value });
@@ -132,7 +143,6 @@ impl plugin::Plugin for OscifyPlugin {
                 Event::Midi(ev) =>
                     if let Ok(msg) = Message::try_from(&ev.data) {
                         debug!("[{}] Received: {:?}", self.osc_sender.id, msg);
-                        self.midi_pitch.process_midi_event(&msg);
                         self.process_midi_event(&msg);
                     } else {
                         error!("[{}] Received invalid midi: {:?}", self.osc_sender.id, ev.data)
