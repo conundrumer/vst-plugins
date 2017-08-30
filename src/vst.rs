@@ -1,3 +1,4 @@
+use time;
 use vst2::event::{Event};
 use vst2::{plugin, api};
 
@@ -8,8 +9,23 @@ use midi::Message;
 use sender;
 use midi_pitch::MidiPitch;
 
+fn u7_into_f32(x: u8) -> f32 {
+    x as f32 / (0x80 as f32) // should be 0x7F but 0x80 centers things and pressure goes that high
+}
+
+const EPOCH_DELTA: i64 = 2208988800i64;
+const NTP_SCALE: f64 = 4294967295.0_f64;
+// offset should be in nanoseconds, less than a second
+fn get_time(t: time::Timespec, offset: f64) -> (u32, u32) {
+    let sec = t.sec + EPOCH_DELTA;
+    let frac = (t.nsec as f64 + offset) * NTP_SCALE / 1e10;
+    (sec as u32, frac as u32)
+}
+
 #[derive(Debug)]
 pub struct OscifyPlugin {
+    sample_rate: f32,
+    block_size: i64,
     pub osc_sender: osc::OscSender,
     pub entries: Vec<config::Entry>,
     pub entry_index: usize,
@@ -18,14 +34,10 @@ pub struct OscifyPlugin {
     pub midi_pitch: MidiPitch
 }
 
-fn u7_into_f32(x: u8) -> f32 {
-    x as f32 / (0x80 as f32) // should be 0x7F but 0x80 centers things and pressure goes that high
-}
-
 const CC_TIMBRE: u8 = 74;
 const CC_PAN: u8 = 10;
 impl OscifyPlugin {
-    fn process_midi_event(&mut self, msg: &Message) {
+    fn process_midi_event(&mut self, msg: &Message, time: (u32, u32)) {
         match msg {
             &Message::NoteOff { channel, key, velocity } =>
                 self.send_note(sender::NoteMessage {
@@ -33,7 +45,7 @@ impl OscifyPlugin {
                     channel,
                     key,
                     velocity: u7_into_f32(velocity)
-                }),
+                }, time),
             &Message::NoteOn { channel, key, velocity } => {
                 if let Some(pitch) = self.midi_pitch.get_pending_pitch(channel, key) {
                     self.send_channel(sender::ChannelMessage {
@@ -41,56 +53,58 @@ impl OscifyPlugin {
                         channel,
                         key,
                         value: pitch
-                    })
+                    }, time)
                 }
                 self.send_note(sender::NoteMessage {
                     note_on: true,
                     channel,
                     key,
                     velocity: u7_into_f32(velocity)
-                })
+                }, time)
             },
             &Message::PitchBend { channel, value } => {
                 if let Some(pitch) = self.midi_pitch.get_pitch(channel, value) {
+                    let key = self.midi_pitch.get_key(channel);
                     self.send_channel(sender::ChannelMessage {
                         channel_type: sender::ChannelType::Pitch,
                         channel,
-                        key: self.midi_pitch.get_key(channel),
+                        key,
                         value: pitch
-                    })
+                    }, time)
                 }
             },
-            &Message::ChannelPressure { channel, pressure } =>
+            &Message::ChannelPressure { channel, pressure } => {
+                let key = self.midi_pitch.get_key(channel);
                 self.send_channel(sender::ChannelMessage {
                     channel_type: sender::ChannelType::Pressure,
                     channel,
-                    key: self.midi_pitch.get_key(channel),
+                    key,
                     value: u7_into_f32(pressure)
-                }),
-            &Message::ControlChange { channel, controller, value } =>
-                match controller {
-                    CC_TIMBRE =>
-                        self.send_channel(sender::ChannelMessage {
-                            channel_type: sender::ChannelType::Timbre,
-                            channel,
-                            key: self.midi_pitch.get_key(channel),
-                            value: u7_into_f32(value)
-                        }),
-                    CC_PAN =>
-                        self.send_channel(sender::ChannelMessage {
-                            channel_type: sender::ChannelType::Pan,
-                            channel,
-                            key: self.midi_pitch.get_key(channel),
-                            value: u7_into_f32(value)
-                        }),
-                    _ => ()
-                },
+                }, time)
+            },
+            &Message::ControlChange { channel, controller, value } => {
+                let key = self.midi_pitch.get_key(channel);
+                let value = u7_into_f32(value);
+                let channel_type = match controller {
+                    CC_TIMBRE => Some(sender::ChannelType::Timbre),
+                    CC_PAN => Some(sender::ChannelType::Pan),
+                    _ => None
+                };
+                if let Some(channel_type) = channel_type {
+                    self.send_channel(sender::ChannelMessage {
+                        channel_type,
+                        channel,
+                        key,
+                        value
+                    }, time)
+                }
+            },
             _ => ()
         }
         self.midi_pitch.process_midi_event(&msg);
     }
-    fn process_param_event(&self, index: usize, value: f32) {
-        self.send_param(sender::ParamMessage { param_index: index, value });
+    fn process_param_event(&mut self, index: usize, value: f32) {
+        self.send_param(sender::ParamMessage { param_index: index, value }, (0, 0));
     }
 }
 
@@ -109,6 +123,8 @@ impl Default for OscifyPlugin {
         }
 
         OscifyPlugin {
+            sample_rate: 0.,
+            block_size: 0,
             osc_sender: osc_sender.unwrap(),
             entries,
             entry_index: 0,
@@ -136,20 +152,28 @@ impl plugin::Plugin for OscifyPlugin {
         }
     }
 
+    fn set_sample_rate(&mut self, rate: f32) { self.sample_rate = rate; }
+
+    fn set_block_size(&mut self, size: i64) { self.block_size = size; }
+
     fn process_events(&mut self, events: &api::Events) {
+        let current_time = time::get_time();
+        debug!("Received {} events:", events.num_events);
         for &e in events.events_raw() {
             let event: Event = Event::from(unsafe { *e });
             match event {
                 Event::Midi(ev) =>
                     if let Ok(msg) = Message::try_from(&ev.data) {
-                        debug!("[{}] Received: {:?}", self.osc_sender.id, msg);
-                        self.process_midi_event(&msg);
+                        debug!("[{}] {} {:?}", self.osc_sender.id, ev.delta_frames, msg);
+                        let t = get_time(current_time, (ev.delta_frames as f64) / (self.sample_rate as f64) * 1e9);
+                        self.process_midi_event(&msg, t);
                     } else {
-                        error!("[{}] Received invalid midi: {:?}", self.osc_sender.id, ev.data)
+                        error!("[{}] invalid midi: {:?}", self.osc_sender.id, ev.data)
                     },
-                _ => debug!("[{}] Received non-midi event", self.osc_sender.id)
+                _ => debug!("[{}] non-midi event", self.osc_sender.id)
             }
         }
+        self.flush_midi_events();
     }
 
     fn can_do(&self, can_do: plugin::CanDo) -> api::Supported {

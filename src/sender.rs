@@ -124,7 +124,7 @@ const NS_NODE: &str = "/oscify";
 const NOTE_NODE: &str = "/note";
 const PARAM_NODE: &str = "/param";
 impl OscifyPlugin {
-    pub fn send_note(&self, NoteMessage { note_on, channel, key, velocity }: NoteMessage) {
+    pub fn send_note(&mut self, NoteMessage { note_on, channel, key, velocity }: NoteMessage, t: (u32, u32)) {
         let entry = self.entries.get(self.entry_index);
 
         let id_address_node = AddressNode::id(entry, (channel, key));
@@ -132,22 +132,32 @@ impl OscifyPlugin {
 
         let base_address_node = AddressNode::base(entry, self.entry_index);
 
-        let address = format!("{}{}{}{}", NS_NODE, base_address_node, id_address_node, NOTE_NODE);
-
-        let msg = vec![
+        self.osc_sender.push(
+            format!("{}{}{}{}/on", NS_NODE, base_address_node, id_address_node, NOTE_NODE),
             OscType::Bool(note_on),
-            OscType::Int(key.into()),
-            OscType::Float(velocity.into()),
-            OscType::Float(self.phase)
-        ];
+            t
+        );
 
-        let result = self.osc_sender.send(address, msg);
-        if result.is_err() {
-            error!("send_note: Could not send");
+        if note_on {
+            self.osc_sender.push(
+                format!("{}{}{}{}/key", NS_NODE, base_address_node, id_address_node, NOTE_NODE),
+                OscType::Int(key.into()),
+                t
+            );
+            self.osc_sender.push(
+                format!("{}{}{}{}/vel", NS_NODE, base_address_node, id_address_node, NOTE_NODE),
+                OscType::Float(velocity),
+                t
+            );
+            self.osc_sender.push(
+                format!("{}{}{}{}/phase", NS_NODE, base_address_node, id_address_node, NOTE_NODE),
+                OscType::Float(self.phase),
+                t
+            );
         }
     }
 
-    pub fn send_channel(&self, ChannelMessage { channel_type, channel, key, value }: ChannelMessage) {
+    pub fn send_channel(&mut self, ChannelMessage { channel_type, channel, key, value }: ChannelMessage, t: (u32, u32)) {
         let entry = self.entries.get(self.entry_index);
 
         let base_address_node = AddressNode::base(entry, self.entry_index);
@@ -155,34 +165,31 @@ impl OscifyPlugin {
         let id_address_node = AddressNode::id(entry, (channel, key));
         if !id_address_node.should_send() { return }
 
-        let address = format!("{}{}{}{}", NS_NODE, base_address_node, id_address_node, AddressNode::from(channel_type));
-
-        let msg = vec![
-            OscType::Float(value)
-        ];
-
-        let result = self.osc_sender.send(address, msg);
-        if result.is_err() {
-            error!("send_channel: Could not send");
-        }
+        self.osc_sender.push(
+            format!("{}{}{}{}", NS_NODE, base_address_node, id_address_node, AddressNode::from(channel_type)),
+            OscType::Float(value),
+            t
+        );
     }
 
-    pub fn send_param(&self, ParamMessage { param_index, value } : ParamMessage) {
+    pub fn send_param(&mut self, ParamMessage { param_index, value } : ParamMessage, t: (u32, u32)) {
         let entry = self.entries.get(self.entry_index);
 
         let base_address_node = AddressNode::base(entry, self.entry_index);
 
         let param_address_node = AddressNode::param(entry, param_index);
 
-        let address = format!("{}{}{}{}", NS_NODE, base_address_node, PARAM_NODE, param_address_node);
+        self.osc_sender.push(
+            format!("{}{}{}{}", NS_NODE, base_address_node, PARAM_NODE, param_address_node),
+            OscType::Float(value),
+            t
+        );
+    }
 
-        let msg = vec![
-            OscType::Float(value)
-        ];
-
-        let result = self.osc_sender.send(address, msg);
+    pub fn flush_midi_events(&mut self) {
+        let result = self.osc_sender.flush();
         if result.is_err() {
-            error!("send_param: Could not send");
+            error!("Could not flush");
         }
     }
 }
