@@ -1,0 +1,21 @@
+[{
+  "type": "Mono",
+  "name": "Debug Mono",
+  "address": "debug/mono",
+  "params": ["param0"]
+}, {
+  "type": "Poly",
+  "name": "Debug Poly",
+  "address": "debug/poly",
+  "params": ["param0"]
+}, {
+  "type": "Drum",
+  "name": "Debug Drum",
+  "address": "debug/drum",
+  "params": ["param0"]
+}, {
+  "type": "Param",
+  "name": "Debug Param",
+  "address": "debug/param",
+  "params": ["param0"]
+}]
