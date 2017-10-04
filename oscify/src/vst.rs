@@ -227,7 +227,8 @@ impl plugin::Plugin for OscifyPlugin {
             2...9 => {
                 let index = index as usize - 2;
                 self.params[index] = value;
-                self.process_param_event(index, value)
+                self.process_param_event(index, value);
+                self.flush_midi_events();
             },
             _ => ()
         }
