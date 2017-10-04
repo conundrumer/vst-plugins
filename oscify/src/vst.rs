@@ -54,6 +54,13 @@ impl OscifyPlugin {
                         key,
                         value: pitch
                     }, time)
+                } else { // no pitch bend, set pitch to as it is
+                    self.send_channel(sender::ChannelMessage {
+                        channel_type: sender::ChannelType::Pitch,
+                        channel,
+                        key,
+                        value: key as f32
+                    }, time)
                 }
                 self.send_note(sender::NoteMessage {
                     note_on: true,
